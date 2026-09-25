@@ -1471,5 +1471,149 @@ class TestStripeScheduleApi(unittest.TestCase):
         self.assertNotIn('segments', data)
 
 
+class TestSeamAlignApi(unittest.TestCase):
+    def setUp(self):
+        self.client = app.test_client()
+
+    def post(self, **overrides):
+        payload = {'rows_a': 8, 'rows_b': 7}
+        payload.update(overrides)
+        return self.client.post('/api/seam-align', json=payload).get_json()
+
+    def test_basic_alignment(self):
+        data = self.post()
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['rows_a'], 8)
+        self.assertEqual(data['rows_b'], 7)
+        self.assertEqual(data['step_count'], 7)
+        self.assertEqual(data['cost'], 0.0089)  # 1/112
+        moves = [(s['move_a'], s['move_b']) for s in data['steps']]
+        self.assertEqual(moves,
+                         [(1, 1), (1, 1), (1, 1), (2, 1),
+                          (1, 1), (1, 1), (1, 1)])
+        # move_label 供页面直接展示
+        self.assertEqual(data['steps'][3]['move_label'], '(2,1)')
+
+    def test_markers_chain_and_ranges(self):
+        data = self.post(rows_a=10, rows_b=8, markers=[{'a': 3, 'b': 2}])
+        self.assertTrue(data['ok'])
+        # 完整标记链含起终点
+        self.assertEqual(
+            [(m['a'], m['b'], m['type']) for m in data['markers']],
+            [(0, 0, 'start'), (3, 2, 'mark'), (10, 8, 'end')])
+        self.assertEqual(len(data['intervals']), 2)
+        self.assertEqual((data['intervals'][0]['a_rows'],
+                          data['intervals'][0]['b_rows']), (3, 2))
+        # 行号范围连续且恰好覆盖两侧全部行
+        self.assertEqual(data['steps'][0]['a_from'], 1)
+        self.assertEqual(data['steps'][-1]['a_to'], 10)
+        self.assertEqual(data['steps'][-1]['b_to'], 8)
+        covered_a = sum(s['a_to'] - s['a_from'] + 1 for s in data['steps'])
+        covered_b = sum(s['b_to'] - s['b_from'] + 1 for s in data['steps'])
+        self.assertEqual(covered_a, 10)
+        self.assertEqual(covered_b, 8)
+        # 路径在标记 (3,2) 落脚，且该步记录了经过的标记
+        landing = [s for s in data['steps']
+                   if any(m['a'] == 3 and m['b'] == 2 for m in s['markers'])]
+        self.assertEqual(len(landing), 1)
+        self.assertEqual((landing[0]['a_pos'], landing[0]['b_pos']), (3, 2))
+        # 末步记录终点
+        self.assertEqual(data['steps'][-1]['markers'],
+                         [{'index': 2, 'a': 10, 'b': 8, 'type': 'end'}])
+
+    def test_list_form_markers_and_string_numbers(self):
+        data = self.post(rows_a='10', rows_b='8', markers=[['3', '2']])
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['step_count'], 8)
+
+    def test_missing_markers_defaults_to_none(self):
+        data = self.post(rows_a=3, rows_b=3)
+        self.assertTrue(data['ok'])
+        self.assertEqual(
+            [(m['a'], m['b'], m['type']) for m in data['markers']],
+            [(0, 0, 'start'), (3, 3, 'end')])
+        self.assertEqual([s['move_label'] for s in data['steps']],
+                         ['(1,1)', '(1,1)', '(1,1)'])
+
+    def test_bad_row_counts(self):
+        for field in ('rows_a', 'rows_b'):
+            for bad in (0, 61, -1, 'x', 1.5, True, None):
+                data = self.post(**{field: bad})
+                self.assertFalse(data['ok'], msg='{}={!r}'.format(field, bad))
+                self.assertEqual(data['error']['type'], 'params',
+                                 msg='{}={!r}'.format(field, bad))
+                self.assertNotIn('steps', data)
+
+    def test_bad_marker_form(self):
+        data = self.post(markers=[{'a': 3}])
+        self.assertFalse(data['ok'])
+        self.assertEqual(data['error']['type'], 'markers')
+
+        data = self.post(markers='3,2')
+        self.assertFalse(data['ok'])
+        self.assertEqual(data['error']['type'], 'markers')
+
+        data = self.post(markers=[[1, 2, 3]])
+        self.assertFalse(data['ok'])
+        self.assertEqual(data['error']['type'], 'markers')
+
+    def test_marker_must_be_strictly_interior(self):
+        data = self.post(rows_a=10, rows_b=10, markers=[{'a': 10, 'b': 10}])
+        self.assertFalse(data['ok'])
+        self.assertEqual(data['error']['type'], 'markers')
+        self.assertIn('内部点', data['error']['message'])
+
+        data = self.post(rows_a=10, rows_b=10, markers=[{'a': 0, 'b': 1}])
+        self.assertFalse(data['ok'])
+        self.assertEqual(data['error']['type'], 'markers')
+
+    def test_markers_must_strictly_increase_on_both_sides(self):
+        # A 侧未严格递增
+        data = self.post(rows_a=10, rows_b=10,
+                         markers=[{'a': 5, 'b': 4}, {'a': 5, 'b': 6}])
+        self.assertFalse(data['ok'])
+        self.assertEqual(data['error']['type'], 'markers')
+        self.assertIn('严格递增', data['error']['message'])
+        # B 侧未严格递增
+        data = self.post(rows_a=10, rows_b=10,
+                         markers=[{'a': 4, 'b': 5}, {'a': 6, 'b': 5}])
+        self.assertFalse(data['ok'])
+        self.assertEqual(data['error']['type'], 'markers')
+
+    def test_infeasible_interval_reported_with_no_partial_route(self):
+        data = self.post(rows_a=10, rows_b=3)
+        self.assertFalse(data['ok'])
+        self.assertEqual(data['error']['type'], 'infeasible')
+        self.assertEqual(data['interval_index'], 1)
+        self.assertEqual((data['a_rows'], data['b_rows']), (10, 3))
+        self.assertIn('无法衔接', data['error']['message'])
+        self.assertIn('不返回部分路线', data['error']['message'])
+        self.assertNotIn('steps', data)
+        self.assertNotIn('intervals', data)
+
+    def test_infeasible_interval_between_markers(self):
+        # (1,5) 使第 1 区间为 (1,5)，比例 5:1 无法衔接
+        data = self.post(rows_a=10, rows_b=10, markers=[{'a': 1, 'b': 5}])
+        self.assertFalse(data['ok'])
+        self.assertEqual(data['error']['type'], 'infeasible')
+        self.assertEqual(data['interval_index'], 1)
+        self.assertEqual((data['a_from'], data['b_from']), (0, 0))
+        self.assertEqual((data['a_to'], data['b_to']), (1, 5))
+        self.assertNotIn('steps', data)
+
+    def test_boundary_ratio_two_is_feasible(self):
+        data = self.post(rows_a=10, rows_b=5)
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['step_count'], 5)
+        self.assertTrue(all(s['move_label'] == '(2,1)' for s in data['steps']))
+        self.assertEqual(data['cost'], 0.0)
+
+    def test_even_sides_cost_zero(self):
+        data = self.post(rows_a=6, rows_b=6)
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['cost'], 0.0)
+        self.assertTrue(all(s['move_label'] == '(1,1)' for s in data['steps']))
+
+
 if __name__ == '__main__':
     unittest.main()

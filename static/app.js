@@ -1470,3 +1470,298 @@ for (const key of Object.keys(stripeInputs)) {
 for (const c of STRIPE_EXAMPLE.colors) {
   addStripeColorRow(c.name, c.rows);
 }
+
+// ---------------------------------------------------------------------------
+// 缝合对位
+// ---------------------------------------------------------------------------
+
+const seamForm = document.getElementById('seam-form');
+const seamMarkersList = document.getElementById('seam-markers-list');
+const seamMessage = document.getElementById('seam-message');
+const seamResult = document.getElementById('seam-result');
+const seamMeta = document.getElementById('seam-meta');
+const seamMarkersWrap = document.getElementById('seam-markers-wrap');
+const seamIntervalsWrap = document.getElementById('seam-intervals-wrap');
+const seamTableWrap = document.getElementById('seam-table-wrap');
+const seamRowsAInput = document.getElementById('seam-rows-a');
+const seamRowsBInput = document.getElementById('seam-rows-b');
+
+// 可复算示例
+const SEAM_EXAMPLES = {
+  plain: {
+    rows_a: '8',
+    rows_b: '7',
+    markers: [],
+  },
+  marker: {
+    rows_a: '10',
+    rows_b: '8',
+    markers: [[3, 2]],
+  },
+  fail: {
+    rows_a: '10',
+    rows_b: '10',
+    markers: [[1, 5]],
+  },
+};
+
+function addSeamMarkerRow(a, b) {
+  const row = document.createElement('div');
+  row.className = 'size-row seam-marker-row';
+
+  const order = document.createElement('span');
+  order.className = 'stripe-order seam-order';
+  order.textContent = '标记' + (seamMarkersList.querySelectorAll('.size-row').length + 1);
+
+  const aInput = document.createElement('input');
+  aInput.type = 'number';
+  aInput.className = 'seam-marker-a';
+  aInput.min = '1';
+  aInput.step = '1';
+  aInput.placeholder = 'A 侧行号 a';
+  aInput.value = a === '' || a === undefined ? '' : String(a);
+  aInput.required = true;
+
+  const comma = document.createElement('span');
+  comma.className = 'seam-comma';
+  comma.textContent = '，';
+
+  const bInput = document.createElement('input');
+  bInput.type = 'number';
+  bInput.className = 'seam-marker-b';
+  bInput.min = '1';
+  bInput.step = '1';
+  bInput.placeholder = 'B 侧行号 b';
+  bInput.value = b === '' || b === undefined ? '' : String(b);
+  bInput.required = true;
+
+  const removeBtn = document.createElement('button');
+  removeBtn.type = 'button';
+  removeBtn.className = 'remove-size';
+  removeBtn.textContent = '×';
+  removeBtn.title = '删除该标记';
+  removeBtn.addEventListener('click', () => {
+    row.remove();
+    updateSeamRowButtons();
+  });
+
+  row.appendChild(order);
+  row.appendChild(aInput);
+  row.appendChild(comma);
+  row.appendChild(bInput);
+  row.appendChild(removeBtn);
+  seamMarkersList.appendChild(row);
+  updateSeamRowButtons();
+}
+
+function updateSeamRowButtons() {
+  const rows = seamMarkersList.querySelectorAll('.size-row');
+  rows.forEach((row, i) => {
+    row.querySelector('.seam-order').textContent = '标记' + (i + 1);
+  });
+}
+
+function readSeamMarkers() {
+  return Array.from(seamMarkersList.querySelectorAll('.size-row')).map((row) => [
+    row.querySelector('.seam-marker-a').value,
+    row.querySelector('.seam-marker-b').value,
+  ]);
+}
+
+function fillSeamExample(name) {
+  const ex = SEAM_EXAMPLES[name];
+  seamRowsAInput.value = ex.rows_a;
+  seamRowsBInput.value = ex.rows_b;
+  seamMarkersList.replaceChildren();
+  for (const [a, b] of ex.markers) {
+    addSeamMarkerRow(a, b);
+  }
+  hideSeamMessage();
+  seamResult.hidden = true;
+}
+
+function showSeamMessage(text, ok) {
+  seamMessage.textContent = text;
+  seamMessage.className = 'move-message ' + (ok ? 'ok' : 'error');
+  seamMessage.hidden = false;
+}
+
+function hideSeamMessage() {
+  seamMessage.hidden = true;
+  seamMessage.textContent = '';
+}
+
+document.getElementById('seam-add-marker').addEventListener('click', () => {
+  addSeamMarkerRow('', '');
+});
+document.getElementById('seam-fill-example').addEventListener('click', () => fillSeamExample('plain'));
+document.getElementById('seam-fill-example-marker').addEventListener('click', () => fillSeamExample('marker'));
+document.getElementById('seam-fill-example-fail').addEventListener('click', () => fillSeamExample('fail'));
+
+function markerTypeLabel(type) {
+  if (type === 'start') {
+    return '起点';
+  }
+  if (type === 'end') {
+    return '终点';
+  }
+  return '标记';
+}
+
+function renderSeam(data) {
+  seamResult.hidden = false;
+
+  seamMeta.textContent =
+    'A 侧 ' + data.rows_a + ' 行　｜　B 侧 ' + data.rows_b + ' 行' +
+    '　｜　共 ' + data.step_count + ' 步缝合' +
+    '　｜　各区间两侧累计进度比例差平方和：' + data.cost;
+
+  // 完整标记链（含起终点）
+  seamMarkersWrap.replaceChildren();
+  const markerTable = document.createElement('table');
+  markerTable.className = 'seam-marker-table';
+  const markerThead = document.createElement('thead');
+  const markerHeadRow = document.createElement('tr');
+  for (const label of ['标记序号', '类型', 'A 侧累计行号', 'B 侧累计行号']) {
+    const th = document.createElement('th');
+    th.textContent = label;
+    markerHeadRow.appendChild(th);
+  }
+  markerThead.appendChild(markerHeadRow);
+  markerTable.appendChild(markerThead);
+  const markerTbody = document.createElement('tbody');
+  for (const m of data.markers) {
+    const tr = document.createElement('tr');
+    tr.className = 'seam-marker-' + m.type;
+    for (const value of [m.index, markerTypeLabel(m.type), m.a, m.b]) {
+      const td = document.createElement('td');
+      td.textContent = value;
+      tr.appendChild(td);
+    }
+    markerTbody.appendChild(tr);
+  }
+  markerTable.appendChild(markerTbody);
+  seamMarkersWrap.appendChild(markerTable);
+
+  // 区间汇总
+  seamIntervalsWrap.replaceChildren();
+  const intervalTable = document.createElement('table');
+  intervalTable.className = 'seam-interval-table';
+  const intervalThead = document.createElement('thead');
+  const intervalHeadRow = document.createElement('tr');
+  for (const label of ['区间', '起点', '终点', 'A 侧行数', 'B 侧行数', '步数', '区间平方差']) {
+    const th = document.createElement('th');
+    th.textContent = label;
+    intervalHeadRow.appendChild(th);
+  }
+  intervalThead.appendChild(intervalHeadRow);
+  intervalTable.appendChild(intervalThead);
+  const intervalTbody = document.createElement('tbody');
+  for (const iv of data.intervals) {
+    const tr = document.createElement('tr');
+    for (const value of [
+      '第 ' + iv.index + ' 区间',
+      '(' + iv.a_from + ',' + iv.b_from + ')',
+      '(' + iv.a_to + ',' + iv.b_to + ')',
+      iv.a_rows,
+      iv.b_rows,
+      iv.steps,
+      iv.cost,
+    ]) {
+      const td = document.createElement('td');
+      td.textContent = value;
+      tr.appendChild(td);
+    }
+    intervalTbody.appendChild(tr);
+  }
+  intervalTable.appendChild(intervalTbody);
+  seamIntervalsWrap.appendChild(intervalTable);
+
+  // 逐步对位表
+  seamTableWrap.replaceChildren();
+  const table = document.createElement('table');
+  const thead = document.createElement('thead');
+  const headRow = document.createElement('tr');
+  for (const label of ['步序', '所属区间', '步进', 'A 侧配对行号范围', 'B 侧配对行号范围',
+                       'A 累计行号', 'B 累计行号', 'A 区间进度', 'B 区间进度', '经过标记']) {
+    const th = document.createElement('th');
+    th.textContent = label;
+    headRow.appendChild(th);
+  }
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+
+  const tbody = document.createElement('tbody');
+  for (const step of data.steps) {
+    const tr = document.createElement('tr');
+    if (step.markers.length > 0) {
+      tr.className = 'seam-marker-land';
+    }
+    const rangeA = step.a_from === step.a_to
+      ? '第 ' + step.a_from + ' 行'
+      : '第 ' + step.a_from + '–' + step.a_to + ' 行';
+    const rangeB = step.b_from === step.b_to
+      ? '第 ' + step.b_from + ' 行'
+      : '第 ' + step.b_from + '–' + step.b_to + ' 行';
+    const markerText = step.markers.length === 0
+      ? '—'
+      : step.markers.map((m) =>
+          markerTypeLabel(m.type) + '(' + m.a + ',' + m.b + ')').join('；');
+    for (const value of [
+      step.seq,
+      '第 ' + step.interval + ' 区间',
+      step.move_label,
+      rangeA,
+      rangeB,
+      step.a_pos,
+      step.b_pos,
+      step.progress_a,
+      step.progress_b,
+      markerText,
+    ]) {
+      const td = document.createElement('td');
+      td.textContent = value;
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  seamTableWrap.appendChild(table);
+}
+
+seamForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  hideSeamMessage();
+  seamResult.hidden = true;
+
+  let data;
+  try {
+    const res = await fetch('/api/seam-align', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        rows_a: seamRowsAInput.value,
+        rows_b: seamRowsBInput.value,
+        markers: readSeamMarkers(),
+      }),
+    });
+    data = await res.json();
+  } catch (err) {
+    showSeamMessage('缝合对位请求失败：' + err.message, false);
+    return;
+  }
+
+  if (!data.ok) {
+    // 某区间无法衔接或参数非法：指出区间/原因，不展示任何部分路线
+    showSeamMessage(data.error ? data.error.message : '计算失败：未知错误', false);
+    return;
+  }
+  showSeamMessage(
+    '已排出 ' + data.step_count + ' 步缝合，经过全部 ' +
+    (data.markers.length - 2) + ' 个中间标记并恰好到达终点 (' +
+    data.rows_a + ',' + data.rows_b + ')。', true);
+  renderSeam(data);
+});
+
+// 初始填入示例 1，便于直接复算
+fillSeamExample('plain');

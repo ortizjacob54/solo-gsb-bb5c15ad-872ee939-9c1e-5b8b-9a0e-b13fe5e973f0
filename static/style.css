@@ -599,3 +599,51 @@ button.small {
 #stripe-colors-wrap tr.stripe-color-2 td:nth-child(2) {
   background: #f1e7ec;
 }
+
+/* 缝合对位 */
+#seam-markers-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.seam-comma {
+  flex: none;
+  font-size: 0.95rem;
+  color: #6b5f50;
+}
+
+#seam-markers-list .seam-marker-a,
+#seam-markers-list .seam-marker-b {
+  width: 150px;
+  max-width: none;
+}
+
+#seam-result {
+  margin-top: 14px;
+}
+
+#seam-markers-wrap,
+#seam-intervals-wrap {
+  overflow-x: auto;
+  margin-bottom: 14px;
+}
+
+#seam-table-wrap {
+  overflow-x: auto;
+}
+
+#seam-table-wrap tr.seam-marker-land td {
+  background: #e9f2e4;
+  font-weight: 600;
+}
+
+#seam-markers-wrap tr.seam-marker-start td,
+#seam-markers-wrap tr.seam-marker-end td {
+  background: #f3efe4;
+}
+
+#seam-markers-wrap tr.seam-marker-mark td {
+  background: #e9f2e4;
+}

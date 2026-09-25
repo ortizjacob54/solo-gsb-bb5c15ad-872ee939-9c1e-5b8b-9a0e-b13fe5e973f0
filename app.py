@@ -142,6 +142,35 @@ POST /api/stripe-schedule  条纹用线排程（连续异色条纹恰好覆盖�
     约束下最多可连续覆盖的行数）。
   参数非法: {"ok": false, "error": {"type": "params"|"colors", "message"}}
 
+POST /api/seam-align     两片织物边缘缝合对位（逐步配对的行号对位表）
+  请求: {"rows_a": 8, "rows_b": 7, "markers": [{"a": 3, "b": 2}, ...]}
+    rows_a/rows_b 为 A、B 两侧行数（1~60 的整数）；markers 可省略或为空，
+    每项为 {"a", "b"} 或 [a, b]，起终点自动视为 (0,0)、(rows_a,rows_b)，
+    标记坐标必须是严格内部点且在两侧都严格递增。
+    每次缝合前进 (1,1)、(1,2) 或 (2,1)（表示该步 A/B 两侧各吃的行数），
+    路径须经过全部标记并恰好到终点；以每个标记区间内两侧累计进度比例
+    （x/da 与 y/db）之差的平方和最小为目标，同分按整条步进序列
+    (1,1)＜(1,2)＜(2,1) 的字典序取解；求解由 seam_align.solve_seam
+    完成（动态规划，Fraction/整数精确计算）。
+  成功: {"ok": true, "rows_a", "rows_b", "step_count", "cost",
+         "markers": [{"index", "a", "b", "type"}, ...],
+         "intervals": [{"index", "from_index", "to_index", "a_from",
+                        "b_from", "a_to", "b_to", "a_rows", "b_rows",
+                        "steps", "cost"}, ...],
+         "steps": [{"seq", "interval", "move", "move_label", "move_a",
+                    "move_b", "a_from", "a_to", "b_from", "b_to",
+                    "a_pos", "b_pos", "progress_a", "progress_b",
+                    "markers"}, ...]}
+    markers 为含起终点（type 为 start/end/mark）的完整标记链；steps 给出
+    逐步配对的行号范围（1 起含两端）、累计行号、区间内累计进度与经过的
+    标记；cost/progress 保留四位小数。
+  某区间无法衔接: {"ok": false, "error": {"type": "infeasible", "message"},
+                   "interval_index", "from_index", "to_index", "a_from",
+                   "b_from", "a_to", "b_to", "a_rows", "b_rows"}
+    区间两侧行数之比超过 2，任何步进序列都无法衔接两端；指出该区间，
+    响应不含 steps/intervals，不返回部分路线。
+  参数非法: {"ok": false, "error": {"type": "params"|"markers", "message"}}
+
 逐行推算规则：每个尺码独立地以上一行的产出作为下一行的可用针数；某尺码
 消耗与可用针数不一致（不足或超出）时，仅该尺码停止并记录行号与差额，
 其余尺码继续推算。指令本身无法解析（含 *{a|b} 项数与尺码数不符、倍数
@@ -171,6 +200,7 @@ from fractions import Fraction
 from flask import Flask, jsonify, render_template, request
 
 from pattern_layout import solve_layout
+from seam_align import solve_seam
 from shaping_plan import solve_shaping
 from stripe_schedule import solve_stripes
 from stitch_parser import (
@@ -391,6 +421,52 @@ def _parse_stripe_colors(raw):
         seen.add(name)
         colors.append({"name": name, "rows": rows})
     return colors, None
+
+
+def _parse_seam_markers(raw, rows_a, rows_b):
+    """校验缝合对位标记对列表，返回 ([[a, b], ...], 错误消息)。
+
+    起终点自动视为 (0,0) 与 (rows_a, rows_b)，无需也不允许在列表中重复；
+    每个标记为 {"a", "b"} 或 [a, b]，坐标须为 1~rows_a-1 / 1~rows_b-1 的
+    整数（即严格内部点），且所有标记在两侧都严格递增（后一个的 a、b 都
+    大于前一个）。
+    """
+    if raw is None:
+        return [], None
+    if not isinstance(raw, list):
+        return None, "标记对应为列表，每项写成 {\"a\", \"b\"} 或 [a, b]"
+    markers = []
+    prev_a = 0
+    prev_b = 0
+    for idx, item in enumerate(raw, 1):
+        if isinstance(item, dict):
+            raw_a, raw_b = item.get("a"), item.get("b")
+        elif isinstance(item, (list, tuple)) and len(item) == 2:
+            raw_a, raw_b = item
+        else:
+            return None, "第 {} 个标记格式错误，应为 {{\"a\", \"b\"}} 或 [a, b]".format(idx)
+        a, err = _parse_nonneg_int(raw_a, "第 {} 个标记的 A 侧行号".format(idx), positive=True)
+        if err:
+            return None, err
+        b, err = _parse_nonneg_int(raw_b, "第 {} 个标记的 B 侧行号".format(idx), positive=True)
+        if err:
+            return None, err
+        if not (a < rows_a and b < rows_b):
+            return None, (
+                "第 {} 个标记 ({},{}) 不是内部点：标记必须严格位于两侧行数之内"
+                "（A 侧 1~{}，B 侧 1~{}）；起点 (0,0) 与终点 ({},{}) 无需填写"
+                .format(idx, a, b, rows_a - 1, rows_b - 1, rows_a, rows_b))
+        if a <= prev_a or b <= prev_b:
+            if a == prev_a or b == prev_b:
+                reason = "与上一个标记 ({},{}) 有一侧行号相同".format(prev_a, prev_b)
+            else:
+                reason = "相对上一个标记 ({},{}) 不是同时增大".format(prev_a, prev_b)
+            return None, (
+                "第 {} 个标记 ({},{}) 在两侧未严格递增：{}，标记必须按 A、B "
+                "两侧行号都增大的顺序填写".format(idx, a, b, reason))
+        markers.append([a, b])
+        prev_a, prev_b = a, b
+    return markers, None
 
 
 def _parse_error_obj(lineno, text, exc):
@@ -1189,6 +1265,114 @@ def stripe_schedule():
             "used": result["used"][i],
             "remaining": result["remaining"][i],
         } for i in range(len(colors))],
+    })
+
+
+@app.post("/api/seam-align")
+def seam_align():
+    """两片织物边缘缝合对位：求逐步配对的行号对位表。
+
+    输入 A、B 两侧行数（各 1~60）与可选标记对 (a,b)；起点 (0,0) 与终点
+    (rows_a, rows_b) 自动视为标记，用户标记在两侧均须严格递增。每次缝合
+    前进 (1,1)、(1,2) 或 (2,1)，路径须经过全部标记并恰好到终点。以每个
+    标记区间内两侧累计进度比例差的平方和最小为目标，同分按整条步进序列
+    (1,1)＜(1,2)＜(2,1) 的字典序取解。求解由 seam_align.solve_seam 完成
+    （动态规划，Fraction/整数精确计算）。某区间无法衔接时指出该区间，
+    不返回任何部分路线。
+    """
+    data = request.get_json(silent=True) or {}
+
+    rows_a, err = _parse_nonneg_int(data.get("rows_a"), "A 侧行数", positive=True)
+    if err:
+        return jsonify({"ok": False, "error": {"type": "params", "message": err}})
+    rows_b, err = _parse_nonneg_int(data.get("rows_b"), "B 侧行数", positive=True)
+    if err:
+        return jsonify({"ok": False, "error": {"type": "params", "message": err}})
+    if not (1 <= rows_a <= 60 and 1 <= rows_b <= 60):
+        return jsonify({
+            "ok": False,
+            "error": {"type": "params",
+                      "message": "A、B 两侧行数都必须在 1~60 之间"},
+        })
+
+    markers, err = _parse_seam_markers(data.get("markers"), rows_a, rows_b)
+    if err:
+        return jsonify({"ok": False, "error": {"type": "markers", "message": err}})
+
+    result = solve_seam(rows_a, rows_b, markers)
+
+    if not result["ok"]:
+        da, db = result["a_rows"], result["b_rows"]
+        if da > db:
+            message = (
+                "第 {k} 个标记区间无法衔接：从 ({a0},{b0}) 到 ({a1},{b1})，A 侧需前进 "
+                "{da} 行、B 侧仅前进 {db} 行（{da} > 2×{db}）；每次缝合单侧最多吃 2 行、"
+                "最少吃 1 行，区间内两侧进度比不得超过 2，任何 (1,1)/(1,2)/(2,1) 步进"
+                "序列都无法同时经过该区间两端。请调整该区间两端的标记行号，不返回部分路线。"
+            ).format(k=result["interval_index"], a0=result["a_from"], b0=result["b_from"],
+                     a1=result["a_to"], b1=result["b_to"], da=da, db=db)
+        else:
+            message = (
+                "第 {k} 个标记区间无法衔接：从 ({a0},{b0}) 到 ({a1},{b1})，B 侧需前进 "
+                "{db} 行、A 侧仅前进 {da} 行（{db} > 2×{da}）；每次缝合单侧最多吃 2 行、"
+                "最少吃 1 行，区间内两侧进度比不得超过 2，任何 (1,1)/(1,2)/(2,1) 步进"
+                "序列都无法同时经过该区间两端。请调整该区间两端的标记行号，不返回部分路线。"
+            ).format(k=result["interval_index"], a0=result["a_from"], b0=result["b_from"],
+                     a1=result["a_to"], b1=result["b_to"], da=da, db=db)
+        return jsonify({
+            "ok": False,
+            "error": {"type": "infeasible", "message": message},
+            "rows_a": rows_a,
+            "rows_b": rows_b,
+            "interval_index": result["interval_index"],
+            "from_index": result["from_index"],
+            "to_index": result["to_index"],
+            "a_from": result["a_from"],
+            "b_from": result["b_from"],
+            "a_to": result["a_to"],
+            "b_to": result["b_to"],
+            "a_rows": da,
+            "b_rows": db,
+        })
+
+    move_labels = {(1, 1): "(1,1)", (1, 2): "(1,2)", (2, 1): "(2,1)"}
+    return jsonify({
+        "ok": True,
+        "rows_a": rows_a,
+        "rows_b": rows_b,
+        "step_count": result["step_count"],
+        "cost": round(float(result["cost"]), 4),
+        "markers": result["markers"],
+        "intervals": [{
+            "index": i["index"],
+            "from_index": i["from_index"],
+            "to_index": i["to_index"],
+            "a_from": i["a_from"],
+            "b_from": i["b_from"],
+            "a_to": i["a_to"],
+            "b_to": i["b_to"],
+            "a_rows": i["a_rows"],
+            "b_rows": i["b_rows"],
+            "steps": i["steps"],
+            "cost": round(float(i["cost"]), 4),
+        } for i in result["intervals"]],
+        "steps": [{
+            "seq": s["seq"],
+            "interval": s["interval"],
+            "move": "mark_{}{}".format(s["move_a"], s["move_b"]),
+            "move_label": move_labels[(s["move_a"], s["move_b"])],
+            "move_a": s["move_a"],
+            "move_b": s["move_b"],
+            "a_from": s["a_from"],
+            "a_to": s["a_to"],
+            "b_from": s["b_from"],
+            "b_to": s["b_to"],
+            "a_pos": s["a_pos"],
+            "b_pos": s["b_pos"],
+            "progress_a": round(float(s["progress_a"]), 4),
+            "progress_b": round(float(s["progress_b"]), 4),
+            "markers": s["markers"],
+        } for s in result["steps"]],
     })
 
 
