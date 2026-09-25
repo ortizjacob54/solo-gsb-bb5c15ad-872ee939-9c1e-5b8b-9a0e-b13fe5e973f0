@@ -1470,3 +1470,265 @@ for (const key of Object.keys(stripeInputs)) {
 for (const c of STRIPE_EXAMPLE.colors) {
   addStripeColorRow(c.name, c.rows);
 }
+
+// ---------------------------------------------------------------------------
+// 缝合对位
+// ---------------------------------------------------------------------------
+
+const seamForm = document.getElementById('seam-form');
+const seamMarkersList = document.getElementById('seam-markers-list');
+const seamMessage = document.getElementById('seam-message');
+const seamResult = document.getElementById('seam-result');
+const seamMeta = document.getElementById('seam-meta');
+const seamSegmentsWrap = document.getElementById('seam-segments-wrap');
+const seamTableWrap = document.getElementById('seam-table-wrap');
+const seamInputs = {
+  rows_a: document.getElementById('seam-rows-a'),
+  rows_b: document.getElementById('seam-rows-b'),
+};
+
+// 可复算示例：A 10 行、B 8 行，标记 (4,5)。
+// 区间 (0,0)→(4,5) 最优步进 (1,1)(1,1)(1,2)(1,1)，区间比例差平方和 0.015；
+// 区间 (4,5)→(10,8) 只能走三个 (2,1)，代价 0。共 7 步。
+const SEAM_EXAMPLE = {
+  rows_a: '10',
+  rows_b: '8',
+  markers: [{ a: '4', b: '5' }],
+};
+
+function addSeamMarkerRow(a, b) {
+  const row = document.createElement('div');
+  row.className = 'size-row seam-marker-row';
+
+  const order = document.createElement('span');
+  order.className = 'seam-order';
+  order.textContent = '标记' + (seamMarkersList.querySelectorAll('.size-row').length + 1);
+
+  const aInput = document.createElement('input');
+  aInput.type = 'number';
+  aInput.className = 'seam-marker-a';
+  aInput.min = '1';
+  aInput.max = '60';
+  aInput.step = '1';
+  aInput.placeholder = 'A 侧行号 a';
+  aInput.value = a;
+  aInput.required = true;
+
+  const sep = document.createElement('span');
+  sep.className = 'seam-marker-sep';
+  sep.textContent = ',';
+
+  const bInput = document.createElement('input');
+  bInput.type = 'number';
+  bInput.className = 'seam-marker-b';
+  bInput.min = '1';
+  bInput.max = '60';
+  bInput.step = '1';
+  bInput.placeholder = 'B 侧行号 b';
+  bInput.value = b;
+  bInput.required = true;
+
+  const removeBtn = document.createElement('button');
+  removeBtn.type = 'button';
+  removeBtn.className = 'remove-size';
+  removeBtn.textContent = '×';
+  removeBtn.title = '删除该标记对';
+  removeBtn.addEventListener('click', () => {
+    row.remove();
+    updateSeamMarkerRows();
+  });
+
+  row.appendChild(order);
+  row.appendChild(aInput);
+  row.appendChild(sep);
+  row.appendChild(bInput);
+  row.appendChild(removeBtn);
+  seamMarkersList.appendChild(row);
+  updateSeamMarkerRows();
+}
+
+function updateSeamMarkerRows() {
+  const rows = seamMarkersList.querySelectorAll('.size-row');
+  rows.forEach((row, i) => {
+    row.querySelector('.seam-order').textContent = '标记' + (i + 1);
+  });
+}
+
+function readSeamMarkers() {
+  return Array.from(seamMarkersList.querySelectorAll('.size-row')).map((row) => ({
+    a: row.querySelector('.seam-marker-a').value,
+    b: row.querySelector('.seam-marker-b').value,
+  }));
+}
+
+function showSeamMessage(text, ok) {
+  seamMessage.textContent = text;
+  seamMessage.className = 'move-message ' + (ok ? 'ok' : 'error');
+  seamMessage.hidden = false;
+}
+
+function hideSeamMessage() {
+  seamMessage.hidden = true;
+  seamMessage.textContent = '';
+}
+
+document.getElementById('seam-add-marker').addEventListener('click', () => {
+  addSeamMarkerRow('', '');
+});
+
+document.getElementById('seam-fill-example').addEventListener('click', () => {
+  seamInputs.rows_a.value = SEAM_EXAMPLE.rows_a;
+  seamInputs.rows_b.value = SEAM_EXAMPLE.rows_b;
+  seamMarkersList.replaceChildren();
+  for (const m of SEAM_EXAMPLE.markers) {
+    addSeamMarkerRow(m.a, m.b);
+  }
+  hideSeamMessage();
+  seamResult.hidden = true;
+});
+
+const SEAM_MOVE_TEXT = {
+  '1,1': '(1,1) 1 行对 1 行',
+  '1,2': '(1,2) 1 行对 2 行',
+  '2,1': '(2,1) 2 行对 1 行',
+};
+
+function anchorLabel(anchor, anchors) {
+  if (anchor === null || anchor === undefined) {
+    return '';
+  }
+  const point = anchors[anchor];
+  if (!point) {
+    return '';
+  }
+  if (point.kind === 'start') {
+    return '起点 (0,0)';
+  }
+  if (point.kind === 'end') {
+    return '终点 (' + point.a + ',' + point.b + ')';
+  }
+  return '标记 (' + point.a + ',' + point.b + ')';
+}
+
+function renderSeam(data) {
+  seamResult.hidden = false;
+
+  seamMeta.textContent =
+    'A 侧 ' + data.rows_a + ' 行' +
+    '　｜　B 侧 ' + data.rows_b + ' 行' +
+    '　｜　共 ' + data.step_count + ' 次缝合' +
+    '　｜　' + (data.markers.length ? data.markers.length + ' 个用户标记' : '无用户标记') +
+    '　｜　各区间进度比例差平方和：' + data.cost;
+
+  // 各标记区间汇总
+  seamSegmentsWrap.replaceChildren();
+  const segTable = document.createElement('table');
+  const segThead = document.createElement('thead');
+  const segHead = document.createElement('tr');
+  for (const label of ['区间', 'A 侧范围', 'B 侧范围', '缝合步范围', '步进数',
+                       '区间平方差和', '步进序列']) {
+    const th = document.createElement('th');
+    th.textContent = label;
+    segHead.appendChild(th);
+  }
+  segThead.appendChild(segHead);
+  segTable.appendChild(segThead);
+  const segTbody = document.createElement('tbody');
+  for (const seg of data.segments) {
+    const tr = document.createElement('tr');
+    const seqText = seg.moves.map((m) => '(' + m.join(',') + ')').join(' ');
+    const values = [
+      '第 ' + seg.index + ' 区间',
+      seg.a_from + ' → ' + seg.a_to + '（' + (seg.a_to - seg.a_from) + ' 行）',
+      seg.b_from + ' → ' + seg.b_to + '（' + (seg.b_to - seg.b_from) + ' 行）',
+      '第 ' + seg.step_from + '~' + seg.step_to + ' 步',
+      seg.step_to - seg.step_from + 1,
+      seg.cost,
+      seqText,
+    ];
+    for (const value of values) {
+      const td = document.createElement('td');
+      td.textContent = value;
+      tr.appendChild(td);
+    }
+    segTbody.appendChild(tr);
+  }
+  segTable.appendChild(segTbody);
+  seamSegmentsWrap.appendChild(segTable);
+
+  // 逐步配对表
+  seamTableWrap.replaceChildren();
+  const table = document.createElement('table');
+  const thead = document.createElement('thead');
+  const headRow = document.createElement('tr');
+  for (const label of ['步号', '步进', 'A 侧行号范围', 'B 侧行号范围', '经过的标记']) {
+    const th = document.createElement('th');
+    th.textContent = label;
+    headRow.appendChild(th);
+  }
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+
+  const tbody = document.createElement('tbody');
+  for (const step of data.steps) {
+    const tr = document.createElement('tr');
+    const moveKey = step.move.join(',');
+    const label = anchorLabel(step.anchor, data.anchors);
+    tr.className = label ? 'seam-anchor-row' : '';
+    const values = [
+      step.index,
+      SEAM_MOVE_TEXT[moveKey] || '(' + moveKey + ')',
+      '第 ' + step.a_from + (step.a_from === step.a_to ? '' : '–' + step.a_to) + ' 行',
+      '第 ' + step.b_from + (step.b_from === step.b_to ? '' : '–' + step.b_to) + ' 行',
+      label || '—',
+    ];
+    for (const value of values) {
+      const td = document.createElement('td');
+      td.textContent = value;
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  seamTableWrap.appendChild(table);
+}
+
+seamForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  hideSeamMessage();
+  seamResult.hidden = true;
+
+  let data;
+  try {
+    const res = await fetch('/api/seam-align', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        rows_a: seamInputs.rows_a.value,
+        rows_b: seamInputs.rows_b.value,
+        markers: readSeamMarkers(),
+      }),
+    });
+    data = await res.json();
+  } catch (err) {
+    showSeamMessage('对位请求失败：' + err.message, false);
+    return;
+  }
+
+  if (!data.ok) {
+    // 某区间无法衔接或参数非法：指出区间/原因，不展示任何部分路线
+    showSeamMessage(data.error ? data.error.message : '计算失败：未知错误', false);
+    return;
+  }
+  showSeamMessage(
+    '已排出 ' + data.step_count + ' 次缝合，两侧 ' + data.rows_a + ' / ' +
+    data.rows_b + ' 行全部配对，路径经过全部标记并恰好到达终点。', true);
+  renderSeam(data);
+});
+
+// 初始填入示例，便于直接体验
+seamInputs.rows_a.value = SEAM_EXAMPLE.rows_a;
+seamInputs.rows_b.value = SEAM_EXAMPLE.rows_b;
+for (const m of SEAM_EXAMPLE.markers) {
+  addSeamMarkerRow(m.a, m.b);
+}

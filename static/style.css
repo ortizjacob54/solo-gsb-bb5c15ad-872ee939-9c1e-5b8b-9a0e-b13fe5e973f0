@@ -599,3 +599,49 @@ button.small {
 #stripe-colors-wrap tr.stripe-color-2 td:nth-child(2) {
   background: #f1e7ec;
 }
+
+/* 缝合对位 */
+#seam-markers-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.seam-order {
+  width: 56px;
+  flex: none;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #6b5f50;
+}
+
+#seam-markers-list .seam-marker-a,
+#seam-markers-list .seam-marker-b {
+  width: 150px;
+  max-width: none;
+}
+
+.seam-marker-sep {
+  font-weight: 600;
+  color: #6b5f50;
+}
+
+#seam-result {
+  margin-top: 14px;
+}
+
+#seam-segments-wrap {
+  overflow-x: auto;
+  margin-bottom: 14px;
+}
+
+#seam-table-wrap {
+  overflow-x: auto;
+}
+
+/* 落点恰在起点/标记/终点的缝合步整行高亮 */
+#seam-table-wrap tr.seam-anchor-row td {
+  background: #e9f2e4;
+  font-weight: 600;
+}

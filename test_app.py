@@ -1471,5 +1471,164 @@ class TestStripeScheduleApi(unittest.TestCase):
         self.assertNotIn('segments', data)
 
 
+class TestSeamAlignApi(unittest.TestCase):
+    def setUp(self):
+        self.client = app.test_client()
+
+    def post(self, **overrides):
+        payload = {'rows_a': 10, 'rows_b': 8,
+                   'markers': [{'a': 4, 'b': 5}]}
+        payload.update(overrides)
+        return self.client.post('/api/seam-align', json=payload).get_json()
+
+    def test_example_alignment(self):
+        data = self.post()
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['rows_a'], 10)
+        self.assertEqual(data['rows_b'], 8)
+        self.assertEqual(data['step_count'], 7)
+        self.assertEqual(data['cost'], 0.015)
+        self.assertEqual(
+            [tuple(s['move']) for s in data['steps']],
+            [(1, 1), (1, 1), (1, 2), (1, 1), (2, 1), (2, 1), (2, 1)])
+
+    def test_step_ranges_cover_all_rows(self):
+        data = self.post()
+        self.assertTrue(data['ok'])
+        steps = data['steps']
+        self.assertEqual((steps[0]['a_from'], steps[0]['a_to']), (1, 1))
+        self.assertEqual((steps[0]['b_from'], steps[0]['b_to']), (1, 1))
+        a = b = 0
+        for step in steps:
+            ma, mb = step['move']
+            self.assertEqual((step['a_from'], step['a_to']),
+                             (a + 1, a + ma))
+            self.assertEqual((step['b_from'], step['b_to']),
+                             (b + 1, b + mb))
+            a, b = a + ma, b + mb
+        self.assertEqual((a, b), (10, 8))
+        self.assertEqual([s['index'] for s in steps], list(range(1, 8)))
+
+    def test_anchors_and_step_markers(self):
+        data = self.post()
+        self.assertEqual(
+            [(p['a'], p['b'], p['kind']) for p in data['anchors']],
+            [(0, 0, 'start'), (4, 5, 'marker'), (10, 8, 'end')])
+        # 第 4 步落在用户标记，第 7 步落在终点
+        self.assertEqual(
+            [s['anchor'] for s in data['steps']],
+            [None, None, None, 1, None, None, 2])
+        self.assertEqual(data['markers'], [{'index': 1, 'a': 4, 'b': 5}])
+
+    def test_segments_summary(self):
+        data = self.post()
+        seg = data['segments']
+        self.assertEqual(len(seg), 2)
+        self.assertEqual(
+            [(s['a_from'], s['a_to'], s['b_from'], s['b_to'],
+              s['step_from'], s['step_to'], s['cost'])
+             for s in seg],
+            [(0, 4, 0, 5, 1, 4, 0.015),
+             (4, 10, 5, 8, 5, 7, 0)])
+
+    def test_no_markers(self):
+        data = self.post(markers=[])
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['markers'], [])
+        self.assertEqual(len(data['anchors']), 2)  # 只有起点和终点
+        self.assertEqual(len(data['segments']), 1)
+        self.assertEqual(data['anchors'][0]['kind'], 'start')
+        self.assertEqual(data['anchors'][-1]['kind'], 'end')
+
+    def test_markers_default_when_omitted(self):
+        data = self.client.post('/api/seam-align',
+                                json={'rows_a': 5, 'rows_b': 5}).get_json()
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['step_count'], 5)
+        self.assertEqual(
+            [tuple(s['move']) for s in data['steps']], [(1, 1)] * 5)
+        self.assertEqual(data['cost'], 0)
+
+    def test_equal_rows_diagonal_cost_zero(self):
+        data = self.post(rows_a=12, rows_b=12, markers=[])
+        self.assertTrue(data['ok'])
+        self.assertTrue(all(tuple(s['move']) == (1, 1) for s in data['steps']))
+        self.assertEqual(data['cost'], 0)
+
+    def test_two_to_one_boundary_feasible(self):
+        data = self.post(rows_a=6, rows_b=3, markers=[])
+        self.assertTrue(data['ok'])
+        self.assertEqual(
+            [tuple(s['move']) for s in data['steps']], [(2, 1)] * 3)
+
+    def test_string_numbers_accepted(self):
+        data = self.post(rows_a='10', rows_b='8',
+                         markers=[{'a': '4', 'b': '5'}])
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['step_count'], 7)
+
+    def test_bad_row_counts(self):
+        for field, bad_values in (
+                ('rows_a', (0, 61, -1, 'x', True, None, 1.5)),
+                ('rows_b', (0, 61, -1, 'x', True, None, 1.5))):
+            for bad in bad_values:
+                data = self.post(**{field: bad})
+                self.assertFalse(data['ok'], msg='{}={!r}'.format(field, bad))
+                self.assertEqual(data['error']['type'], 'params',
+                                 msg='{}={!r}'.format(field, bad))
+                self.assertNotIn('steps', data)
+
+    def test_marker_out_of_range(self):
+        # a 不允许等于 rows_a（终点自动生成，不可重复指定）
+        data = self.post(markers=[{'a': 10, 'b': 5}])
+        self.assertFalse(data['ok'])
+        self.assertEqual(data['error']['type'], 'markers')
+        self.assertIn('越界', data['error']['message'])
+        # 行数为 1 时不存在合法的内部标记
+        edge = self.post(rows_a=1, rows_b=4, markers=[{'a': 1, 'b': 2}])
+        self.assertFalse(edge['ok'])
+        self.assertEqual(edge['error']['type'], 'markers')
+
+    def test_markers_must_be_strictly_increasing(self):
+        data = self.post(markers=[{'a': 4, 'b': 5}, {'a': 4, 'b': 7}])
+        self.assertFalse(data['ok'])
+        self.assertEqual(data['error']['type'], 'markers')
+        self.assertIn('严格递增', data['error']['message'])
+        data = self.post(markers=[{'a': 4, 'b': 5}, {'a': 6, 'b': 5}])
+        self.assertFalse(data['ok'])
+        self.assertEqual(data['error']['type'], 'markers')
+        self.assertIn('严格递增', data['error']['message'])
+
+    def test_markers_must_be_list_of_pairs(self):
+        for bad in ([1, 2], [{'a': 3}], [{'a': 3, 'b': 'x'}]):
+            data = self.post(markers=bad)
+            self.assertFalse(data['ok'], msg=repr(bad))
+            self.assertEqual(data['error']['type'], 'markers')
+
+    def test_infeasible_segment_reported_no_partial_route(self):
+        # 标记 (2,7)：第 1 段 A 2 行对 B 7 行，比例超过 2:1
+        data = self.post(markers=[{'a': 2, 'b': 7}])
+        self.assertFalse(data['ok'])
+        self.assertEqual(data['error']['type'], 'infeasible')
+        self.assertEqual(data['fail_segment'], 1)
+        self.assertIn('第 1 个对位区间', data['error']['message'])
+        self.assertIn('2:1', data['error']['message'])
+        self.assertIn('不返回任何部分路线', data['error']['message'])
+        # 只给区间诊断，不给逐步路线
+        self.assertNotIn('steps', data)
+        self.assertEqual(
+            [(s['index'], s['feasible']) for s in data['segments']],
+            [(1, False), (2, False)])
+
+    def test_infeasible_without_markers(self):
+        # 1 对 3：整条边就是第 1 个区间，无法衔接
+        data = self.post(rows_a=1, rows_b=3, markers=[])
+        self.assertFalse(data['ok'])
+        self.assertEqual(data['error']['type'], 'infeasible')
+        self.assertEqual(data['fail_segment'], 1)
+        self.assertFalse(data['segments'][0]['feasible'])
+        self.assertNotIn('steps', data)
+
+
 if __name__ == '__main__':
     unittest.main()

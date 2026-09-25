@@ -343,6 +343,50 @@
         <div id="stripe-table-wrap"></div>
       </section>
     </section>
+
+    <section class="preview-section" id="seam-section">
+      <h2>缝合对位</h2>
+      <p class="hint">
+        输入 A、B 两侧织物的行数（各 1~60）与可选的标记对 <code>(a,b)</code>——起点
+        <code>(0,0)</code> 与终点 <code>(A,B)</code> 自动视为标记，标记对在两侧都必须
+        <strong>严格递增</strong>。每次缝合让两侧累计行号前进 <code>(1,1)</code>（1 行对
+        1 行）、<code>(1,2)</code>（1 行对 2 行）或 <code>(2,1)</code>（2 行对 1 行），
+        路径须经过全部标记并恰好到达终点。计算以<strong>每个标记区间内两侧累计进度比例
+        差的平方和最小</strong>为目标，同分时按整条步进序列
+        <code>(1,1)＜(1,2)＜(2,1)</code> 的字典序取最靠前的方案；结果逐步列出配对的
+        行号范围与经过的标记。某个区间两侧行数之比超过 2:1 时无法衔接，会指出该区间、
+        <strong>不返回部分路线</strong>。
+      </p>
+      <form id="seam-form">
+        <div class="layout-grid">
+          <label class="layout-item">
+            <span>A 侧行数（1~60）</span>
+            <input type="number" id="seam-rows-a" min="1" max="60" step="1" value="10" required>
+          </label>
+          <label class="layout-item">
+            <span>B 侧行数（1~60）</span>
+            <input type="number" id="seam-rows-b" min="1" max="60" step="1" value="8" required>
+          </label>
+        </div>
+
+        <div class="field">
+          <span>标记对（可选，按顺序；a、b 在两侧均严格递增，自动隐含 (0,0) 与 (A,B)）</span>
+          <div id="seam-markers-list"></div>
+          <button type="button" id="seam-add-marker" class="small">＋ 添加标记对</button>
+        </div>
+
+        <div class="actions">
+          <button type="submit">计算对位</button>
+          <button type="button" id="seam-fill-example">填入示例</button>
+        </div>
+      </form>
+      <div id="seam-message" class="move-message" hidden></div>
+      <section id="seam-result" hidden>
+        <div id="seam-meta" class="preview-meta"></div>
+        <div id="seam-segments-wrap"></div>
+        <div id="seam-table-wrap"></div>
+      </section>
+    </section>
   </main>
 
   <script src="{{ url_for('static', filename='app.js') }}"></script>
